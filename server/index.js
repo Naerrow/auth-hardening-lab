@@ -20,6 +20,7 @@ const REFRESH_TTL_SEC = 60 * 60 * 24 * 7; // 7일 (Stage3에서 refresh 도입)
 // 쿠키 옵션(로컬 개발 기준)
 const isProd = process.env.NODE_ENV === "production";
 const REFRESH_COOKIE_NAME = "refresh_token";
+const CSRF_COOKIE_NAME = "csrf_token";
 
 const refreshCookieOptions = {
   httpOnly: true,
@@ -27,6 +28,14 @@ const refreshCookieOptions = {
   sameSite: "lax",
   // path를 refresh 엔드포인트로 제한하면 표면을 줄일 수 있음
   path: "/auth/refresh",
+  maxAge: REFRESH_TTL_SEC * 1000,
+};
+
+const csrfCookieOptions = {
+  httpOnly: false,
+  secure: isProd,
+  sameSite: "lax",
+  path: "/",
   maxAge: REFRESH_TTL_SEC * 1000,
 };
 
@@ -40,6 +49,55 @@ app.use(
     credentials: true, // ✅ 쿠키 주고받으려면 true
   }),
 );
+
+function issueCsrfToken(res) {
+  const token = crypto.randomBytes(32).toString("hex");
+  res.cookie(CSRF_COOKIE_NAME, token, csrfCookieOptions);
+  return token;
+}
+
+function verifyCsrf(req) {
+  const origin = req.get("origin") || "";
+  const referer = req.get("referer") || "";
+  const originOk = origin === CLIENT_ORIGIN;
+  const refererOk = referer.startsWith(CLIENT_ORIGIN);
+
+  if (!origin && !referer) {
+    throw new Error("Origin/Referer가 없습니다.");
+  }
+  if (!originOk && !refererOk) {
+    throw new Error("Origin/Referer 검증 실패");
+  }
+
+  const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
+  const headerToken = req.get("x-csrf-token");
+  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+    throw new Error("CSRF 토큰 검증 실패");
+  }
+}
+
+// Stage6: 모든 요청에 CSRF 검증 적용 (토큰 발급 엔드포인트는 예외)
+app.use((req, res, next) => {
+  if (STAGE < 6) return next();
+  if (req.path === "/auth/csrf") return next();
+  try {
+    verifyCsrf(req);
+    next();
+  } catch (e) {
+    return res.status(403).json({ message: e.message || "CSRF 검증 실패" });
+  }
+});
+
+// CSRF 토큰 발급 (Double Submit Cookie)
+app.get("/auth/csrf", (req, res) => {
+  if (STAGE < 6) {
+    return res
+      .status(400)
+      .json({ message: "Stage 6부터 CSRF 토큰을 사용할 수 있습니다." });
+  }
+  const token = issueCsrfToken(res);
+  res.json({ csrfToken: token, message: "CSRF 토큰 발급 완료" });
+});
 
 // Access Token 생성
 function signAccessToken(userId) {
@@ -107,7 +165,7 @@ function verifyRefreshFromCookie(req) {
 
 // 로그인: Stage 1~3에서 모두 가능 (Stage3에서 refresh 쿠키 발급)
 app.post("/login", (req, res) => {
-  if (![1, 2, 3].includes(STAGE)) {
+  if (![1, 2, 3, 4, 5, 6].includes(STAGE)) {
     return res.status(400).json({
       message:
         "현재 설정에서는 이 엔드포인트를 Stage 1~3에서만 사용할 수 있습니다.",
@@ -128,6 +186,10 @@ app.post("/login", (req, res) => {
   if (STAGE >= 3) {
     const { token: refreshToken } = signRefreshToken(userId);
     res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
+  }
+  // ✅ Stage6: CSRF 쿠키 발급
+  if (STAGE >= 6) {
+    issueCsrfToken(res);
   }
 
   res.json({
@@ -153,6 +215,9 @@ app.post("/auth/refresh", (req, res) => {
   try {
     const { userId } = verifyRefreshFromCookie(req);
     const newAccessToken = signAccessToken(userId);
+    if (STAGE >= 6) {
+      issueCsrfToken(res);
+    }
 
     res.json({
       accessToken: newAccessToken,
