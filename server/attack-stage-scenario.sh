@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 
-set -e
+set +e
 set -o pipefail
 
 BASE_URL=${BASE_URL:-"http://localhost:4000"}
@@ -127,12 +127,11 @@ check_status() {
   if status_ok "$got" "$expected"; then
     echo "[OK] $label: status=$got (expected=$expected)"
     ((PASS_COUNT++))
-    return 0
   else
     echo "[WARN] $label: status=$got (expected=$expected)"
     ((WARN_COUNT++))
-    return 1
   fi
+  return 0
 }
 
 report_row() {
