@@ -182,28 +182,34 @@ echo "STAGE: $STAGE"
 print_stage_matrix
 
 print_step "2) A 세션 시작: CSRF 발급(+저장) -> 로그인"
+login_headers=(
+  -H "Origin: ${CLIENT_ORIGIN}"
+  -H "Content-Type: application/json"
+  -A "$UA_A"
+)
 if (( STAGE >= 6 )); then
   curl -s -c "$JAR_A" -b "$JAR_A" -H "Origin: ${CLIENT_ORIGIN}" -A "$UA_A" "$BASE_URL/auth/csrf" > "$JAR_TEMP" 2>/dev/null
-  if [[ -z "$(csrf_cookie_value "$JAR_A")" ]]; then
+  csrfA=$(csrf_cookie_value "$JAR_A")
+  if [[ -z "$csrfA" ]]; then
     echo "[ERR] A 세션 CSRF 쿠키 발급 실패"
     exit 1
   fi
+  login_headers+=( -H "x-csrf-token: ${csrfA}" )
+  echo "A CSRF 쿠키: ${csrfA}"
 fi
 
-resp1=$(curl -s -c "$JAR_A" -b "$JAR_A" \
-  -H "Origin: ${CLIENT_ORIGIN}" \
-  -H "Content-Type: application/json" \
-  -A "$UA_A" \
+resp1=$(curl -s -c "$JAR_A" -b "$JAR_A" "${login_headers[@]}" \
   --data '{"username":"demo","password":"demo"}' \
   "$BASE_URL/login")
 
 echo "$resp1"
-if ! echo "$resp1" | jq -e '.stage' >/dev/null 2>&1; then
+if ! echo "$resp1" | jq -e '.accessToken or .token or .message' >/dev/null 2>&1; then
   echo "[ERR] A 로그인 응답 형식이 비정상"
   exit 1
 fi
-csrfA=$(csrf_cookie_value "$JAR_A")
-echo "A CSRF 쿠키: ${csrfA}"
+if (( STAGE < 6 )); then
+  echo "A 응답에 stage 정보 없음(구버전 응답 형식)"
+fi
 
 print_step "3) 공격자 관점 토큰 획득(복제)"
 cp "$JAR_A" "$JAR_STEAL"
@@ -224,18 +230,23 @@ expected3=$(expected_status "$STAGE" "REPLAY_ATTACK")
 check_status "A replay attack" "$status3" "$expected3"
 
 print_step "6) B 세션 시작 (동일 계정 재로그인) -> 이전 세션 덮어쓰기 확인"
+login_headers_b=(
+  -H "Origin: ${CLIENT_ORIGIN}"
+  -H "Content-Type: application/json"
+  -A "$UA_B"
+)
 if (( STAGE >= 6 )); then
   curl -s -c "$JAR_B" -b "$JAR_B" -H "Origin: ${CLIENT_ORIGIN}" -A "$UA_B" "$BASE_URL/auth/csrf" > "$JAR_TEMP" 2>/dev/null
-  if [[ -z "$(csrf_cookie_value "$JAR_B")" ]]; then
+  csrfB=$(csrf_cookie_value "$JAR_B")
+  if [[ -z "$csrfB" ]]; then
     echo "[ERR] B 세션 CSRF 쿠키 발급 실패"
     exit 1
   fi
+  login_headers_b+=( -H "x-csrf-token: ${csrfB}" )
+  echo "B CSRF 쿠키: ${csrfB}"
 fi
 
-curl -s -c "$JAR_B" -b "$JAR_B" \
-  -H "Origin: ${CLIENT_ORIGIN}" \
-  -H "Content-Type: application/json" \
-  -A "$UA_B" \
+curl -s -c "$JAR_B" -b "$JAR_B" "${login_headers_b[@]}" \
   --data '{"username":"demo","password":"demo"}' \
   "$BASE_URL/login" > "$JAR_TEMP"
 
