@@ -9,7 +9,6 @@ const PORT = 4000;
 const CLIENT_ORIGIN = "http://localhost:5173";
 const STAGE = Number(process.env.STAGE || 1);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const ACCESS_TTL_SEC = 60 * 5;
 
 app.use(
   cors({
@@ -20,9 +19,7 @@ app.use(
 
 // 사용자 ID로 유효 기간이 설정된 액세스 토큰을 생성합니다.
 function signAccessToken(userId) {
-  return jwt.sign({ sub: userId, typ: "access" }, JWT_SECRET, {
-    expiresIn: ACCESS_TTL_SEC,
-  });
+  return jwt.sign({ sub: userId, typ: "access" }, JWT_SECRET);
 }
 
 // 요청에 포함된 Authorization Bearer 토큰을 검증하여 인증된 요청인지 확인합니다.
@@ -58,7 +55,7 @@ app.post("/login", (req, res) => {
     return res.status(401).json({ message: "잘못된 인증 정보입니다." });
 
   const accessToken = signAccessToken("user-1");
-  res.json({ accessToken, tokenType: "Bearer", expiresInSec: ACCESS_TTL_SEC });
+  res.json({ accessToken, tokenType: "Bearer" });
 });
 
 // 토큰 인증된 사용자 정보를 돌려줍니다.
