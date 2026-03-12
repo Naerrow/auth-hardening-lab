@@ -20,6 +20,7 @@ const REFRESH_TTL_SEC = 60 * 60 * 24 * 7; // 7일 (Stage3에서 refresh 도입)
 // 쿠키 옵션(로컬 개발 기준)
 const isProd = process.env.NODE_ENV === "production";
 const REFRESH_COOKIE_NAME = "refresh_token";
+const refreshingRefreshJtis = new Set();
 
 const refreshCookieOptions = {
   httpOnly: true,
@@ -31,8 +32,7 @@ const refreshCookieOptions = {
 };
 
 // Stage3: refresh 토큰을 서버가 "세션처럼" 관리하기 위한 인메모리 저장소
-// (Stage7에서 rotation/재사용 감지로 확장할 부분)
-const refreshStore = new Map(); // key: jti, value: { userId, expiresAt }
+const refreshStore = new Map(); // key: jti, value: { userId, expiresAt, refreshing }
 
 app.use(
   cors({
@@ -58,6 +58,7 @@ function signRefreshToken(userId) {
   refreshStore.set(jti, {
     userId,
     expiresAt: Date.now() + REFRESH_TTL_SEC * 1000,
+    refreshing: false,
   });
 
   return { token, jti };
@@ -102,15 +103,15 @@ function verifyRefreshFromCookie(req) {
     throw new Error("만료된 Refresh 토큰입니다.");
   }
 
-  return { userId: payload.sub, jti: payload.jti };
+  return { userId: payload.sub, jti: payload.jti, record };
 }
 
-// 로그인: Stage 1~3에서 모두 가능 (Stage3에서 refresh 쿠키 발급)
+// 로그인: Stage 1~5에서 가능 (Stage3+에서 refresh 쿠키 발급)
 app.post("/login", (req, res) => {
-  if (![1, 2, 3].includes(STAGE)) {
+  if (![1, 2, 3, 4, 5].includes(STAGE)) {
     return res.status(400).json({
       message:
-        "현재 설정에서는 이 엔드포인트를 Stage 1~3에서만 사용할 수 있습니다.",
+        "현재 설정에서는 이 엔드포인트를 Stage 1~5에서만 사용할 수 있습니다.",
     });
   }
 
@@ -150,18 +151,54 @@ app.post("/auth/refresh", (req, res) => {
       .json({ message: "Stage 3부터 refresh를 사용할 수 있습니다." });
   }
 
-  try {
-    const { userId } = verifyRefreshFromCookie(req);
-    const newAccessToken = signAccessToken(userId);
+  const CONCURRENCY_LOCK_TTL_MS = 1500;
+  let parsedJti;
 
-    res.json({
+  try {
+    const { userId, jti: refreshJti, record } = verifyRefreshFromCookie(req);
+    parsedJti = refreshJti;
+
+    if (record.refreshing || refreshingRefreshJtis.has(refreshJti)) {
+      return res
+        .status(409)
+        .json({ message: "Refresh 토큰이 이미 처리 중입니다." });
+    }
+
+    // Stage5: 같은 refresh 토큰의 동시 401 레이스 제어
+    record.refreshing = true;
+    refreshingRefreshJtis.add(refreshJti);
+    refreshStore.set(refreshJti, record);
+
+    // 동시성 제어 락은 즉시 해제되지 않고 짧은 구간 유지되어
+    // “동일 시점 병렬 요청”이 연쇄적으로 성공하는 것을 방지한다.
+    setTimeout(() => {
+      const current = refreshStore.get(refreshJti);
+      if (current) {
+        current.refreshing = false;
+        refreshStore.set(refreshJti, current);
+      }
+      refreshingRefreshJtis.delete(refreshJti);
+    }, CONCURRENCY_LOCK_TTL_MS).unref();
+
+    const newAccessToken = signAccessToken(userId);
+    return res.json({
       accessToken: newAccessToken,
       tokenType: "Bearer",
       expiresInSec: ACCESS_TTL_SEC,
       message: "Refresh로 Access 재발급 완료",
     });
   } catch (e) {
-    return res.status(401).json({ message: e.message || "Refresh 검증 실패" });
+    if (parsedJti) {
+      const current = refreshStore.get(parsedJti);
+      if (current) {
+        current.refreshing = false;
+        refreshStore.set(parsedJti, current);
+      }
+      refreshingRefreshJtis.delete(parsedJti);
+    }
+    return res
+      .status(401)
+      .json({ message: e.message || "Refresh 검증 실패" });
   }
 });
 
