@@ -10,8 +10,20 @@ app.use(cookieParser());
 
 const PORT = 4000;
 const CLIENT_ORIGIN = "http://localhost:5173";
-const STAGE = Number(process.env.STAGE || 8);
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
+const STAGE = Number(process.env.STAGE || 9);
+const DEFAULT_JWT_SECRET = "dev-secret-change-me";
+const JWT_SECRET =
+  process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+
+if (!process.env.JWT_SECRET) {
+  console.warn(
+    "JWT_SECRET 환경변수가 없어 현재 프로세스 전용 임시 서명 시크릿을 생성했습니다.",
+  );
+} else if (process.env.JWT_SECRET === DEFAULT_JWT_SECRET) {
+  console.warn(
+    "JWT_SECRET가 알려진 기본 개발용 값입니다. 로컬 데모 외 환경에서는 고유한 시크릿으로 변경하세요.",
+  );
+}
 
 // Stage별 TTL (원하는 값으로 조절 가능)
 const ACCESS_TTL_SEC = 10; // Stage2는 10초 만료 재현, 그 외는 5분
@@ -276,10 +288,10 @@ function verifyRefreshFromCookie(req) {
 
 // 로그인: Stage 1~3에서 모두 가능 (Stage3에서 refresh 쿠키 발급)
 app.post("/login", (req, res) => {
-  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(STAGE)) {
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(STAGE)) {
     return res.status(400).json({
       message:
-        "현재 설정에서는 이 엔드포인트를 Stage 1~8에서만 사용할 수 있습니다.",
+        "현재 설정에서는 이 엔드포인트를 Stage 1~9에서만 사용할 수 있습니다.",
     });
   }
 
