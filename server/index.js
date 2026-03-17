@@ -10,7 +10,7 @@ app.use(cookieParser());
 
 const PORT = 4000;
 const CLIENT_ORIGIN = "http://localhost:5173";
-const STAGE = Number(process.env.STAGE || 9);
+const STAGE = Number(process.env.STAGE || 10);
 const DEFAULT_JWT_SECRET = "dev-secret-change-me";
 const JWT_SECRET =
   process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
@@ -115,8 +115,10 @@ app.get("/auth/csrf", (req, res) => {
 });
 
 // Access Token 생성
-function signAccessToken(userId) {
-  return jwt.sign({ sub: userId, typ: "access" }, JWT_SECRET, {
+function signAccessToken(userId, familyId = null) {
+  const payload = { sub: userId, typ: "access" };
+  if (familyId) payload.fid = familyId;
+  return jwt.sign(payload, JWT_SECRET, {
     expiresIn: ACCESS_TTL_SEC,
   });
 }
@@ -230,6 +232,18 @@ function requireAccess(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     if (payload.typ !== "access") throw new Error("액세스 토큰이 아닙니다.");
+    if (STAGE >= 10) {
+      if (!payload.fid) {
+        throw new Error("세션 정보가 없는 액세스 토큰입니다.");
+      }
+      const family = refreshFamilies.get(payload.fid);
+      if (!family || family.expiresAt < Date.now()) {
+        if (family?.expiresAt && family.expiresAt < Date.now()) {
+          revokeFamily(payload.fid);
+        }
+        throw new Error("로그아웃되었거나 만료된 세션입니다.");
+      }
+    }
     req.userId = payload.sub;
     next();
   } catch {
@@ -288,10 +302,10 @@ function verifyRefreshFromCookie(req) {
 
 // 로그인: Stage 1~3에서 모두 가능 (Stage3에서 refresh 쿠키 발급)
 app.post("/login", (req, res) => {
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(STAGE)) {
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(STAGE)) {
     return res.status(400).json({
       message:
-        "현재 설정에서는 이 엔드포인트를 Stage 1~9에서만 사용할 수 있습니다.",
+        "현재 설정에서는 이 엔드포인트를 Stage 1~10에서만 사용할 수 있습니다.",
     });
   }
 
@@ -303,7 +317,7 @@ app.post("/login", (req, res) => {
   }
 
   const userId = "user-1";
-  const accessToken = signAccessToken(userId);
+  let familyId = null;
 
   // ✅ Stage3: refresh 쿠키 발급 (Stage7: 패밀리 생성 + 절대 만료)
   if (STAGE >= 3) {
@@ -311,7 +325,7 @@ app.post("/login", (req, res) => {
       revokeUserFamilies(userId);
     }
 
-    const familyId = STAGE >= 7 ? crypto.randomUUID() : null;
+    familyId = STAGE >= 7 ? crypto.randomUUID() : null;
     if (STAGE >= 7 && familyId) {
       ensureFamilySet(familyId, Date.now() + SESSION_MAX_TTL_SEC * 1000);
     }
@@ -319,6 +333,7 @@ app.post("/login", (req, res) => {
     const { token: refreshToken } = signRefreshToken(userId, familyId, binding);
     res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
   }
+  const accessToken = signAccessToken(userId, STAGE >= 10 ? familyId : null);
   // ✅ Stage6: CSRF 쿠키 발급
   if (STAGE >= 6) {
     issueCsrfToken(res);
@@ -346,7 +361,10 @@ app.post("/auth/refresh", (req, res) => {
 
   try {
     const { userId, jti, familyId } = verifyRefreshFromCookie(req);
-    const newAccessToken = signAccessToken(userId);
+    const newAccessToken = signAccessToken(
+      userId,
+      STAGE >= 10 ? familyId : null,
+    );
     if (STAGE >= 7) {
       // rotation: 기존 토큰 사용 처리 + 새 토큰 발급
       const record = refreshStore.get(jti);
