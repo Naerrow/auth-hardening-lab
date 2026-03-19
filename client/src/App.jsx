@@ -120,10 +120,7 @@ export default function App() {
     <div className="app-shell">
       <main className="app-layout">
         <header className="app-heading">
-          <p className="eyebrow">
-            8단계 · 로그인 단일 세션/토큰 바인딩 보안 강화
-          </p>
-          <h1>mini-auth-lab</h1>
+          <h1>auth-hardening-lab</h1>
           <p className="subtitle">
             서버 http://localhost:4000 · 클라이언트 http://localhost:5173
           </p>
